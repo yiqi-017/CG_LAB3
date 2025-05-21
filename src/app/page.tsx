@@ -1,103 +1,199 @@
-import Image from "next/image";
+"use client";
+import { useState, useRef, useEffect } from "react";
+import * as THREE from 'three';
+// @ts-ignore
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+// @ts-ignore
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [stepData, setStepData] = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  useEffect(() => {
+    if (!canvasRef.current) return;
+
+    // 初始化场景
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf0f0f0);
+    sceneRef.current = scene;
+
+    // 初始化相机
+    const camera = new THREE.PerspectiveCamera(
+      75,
+      canvasRef.current.clientWidth / canvasRef.current.clientHeight,
+      0.1,
+      1000
+    );
+    camera.position.z = 5;
+
+    // 初始化渲染器
+    const renderer = new THREE.WebGLRenderer({ canvas: canvasRef.current, antialias: true });
+    renderer.setSize(canvasRef.current.clientWidth, canvasRef.current.clientHeight);
+    rendererRef.current = renderer;
+
+    // 添加轨道控制器
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controlsRef.current = controls;
+
+    // 动画循环
+    const animate = () => {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    // 清理函数
+    return () => {
+      renderer.dispose();
+      controls.dispose();
+    };
+  }, []);
+
+  const handleRun = async () => {
+    try {
+      setLoading(true);
+      setError("");
+      setStepData(null);
+
+      const response = await fetch('/api/text-to-cad', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: input }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setStepData(data.result);
+        // 清除现有模型
+        if (sceneRef.current) {
+          while(sceneRef.current.children.length > 0){ 
+            sceneRef.current.remove(sceneRef.current.children[0]); 
+          }
+        }
+
+        // 将 STEP 文件转换为 STL 格式（这里需要后端支持）
+        const stlResponse = await fetch('/api/convert-to-stl', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ stepData: data.result }),
+        });
+
+        const stlData = await stlResponse.json();
+        
+        if (stlData.success) {
+          // 加载 STL 模型
+          const loader = new STLLoader();
+          const geometry = loader.parse(stlData.stlData);
+          const material = new THREE.MeshBasicMaterial({ 
+            color: 0x156289,  // STEP蓝色
+            transparent: true,
+            opacity: 0.3,     // 降低不透明度，增加透明度
+            side: THREE.DoubleSide,
+            depthWrite: true
+          });
+          const mesh = new THREE.Mesh(geometry, material);
+
+          // 居中模型
+          geometry.computeBoundingBox();
+          const center = new THREE.Vector3();
+          geometry.boundingBox?.getCenter(center);
+          mesh.position.sub(center);
+
+          // 调整模型大小
+          const size = new THREE.Vector3();
+          geometry.boundingBox?.getSize(size);
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const scale = 2 / maxDim;
+          mesh.scale.multiplyScalar(scale);
+
+          sceneRef.current?.add(mesh);
+        } else {
+          setError(stlData.error || '模型转换失败');
+        }
+      } else {
+        setError(data.error || '处理失败');
+      }
+    } catch (err) {
+      setError('请求失败，请稍后重试');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDownloadStep = () => {
+    if (!stepData) return;
+    
+    // 创建Blob对象
+    const blob = new Blob([stepData], { type: 'application/step' });
+    // 创建下载链接
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'model.step';  // 设置下载文件名
+    document.body.appendChild(a);
+    a.click();
+    // 清理
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  return (
+    <div className="min-h-screen p-8 flex flex-col items-center justify-center">
+      <div className="w-full max-w-4xl space-y-4">
+        <textarea
+          className="w-full h-32 p-4 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="请输入3D模型描述..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={loading}
+        />
+        
+        <div className="flex gap-4">
+          <button
+            className={`flex-1 py-2 px-4 bg-blue-500 text-white rounded-lg transition-colors ${
+              loading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-600'
+            }`}
+            onClick={handleRun}
+            disabled={loading}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            {loading ? '处理中...' : '运行'}
+          </button>
+
+          <button
+            className={`py-2 px-4 bg-green-500 text-white rounded-lg transition-colors ${
+              !stepData ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-600'
+            }`}
+            onClick={handleDownloadStep}
+            disabled={!stepData}
           >
-            Read our docs
-          </a>
+            下载STEP文件
+          </button>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        {error && (
+          <div className="text-red-500 text-sm">
+            {error}
+          </div>
+        )}
+
+        <div className="w-full h-[500px] border border-gray-300 rounded-lg overflow-hidden">
+          <canvas ref={canvasRef} className="w-full h-full" />
+        </div>
+      </div>
     </div>
   );
 }
