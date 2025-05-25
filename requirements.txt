@@ -2,3 +2,8 @@ kittycad==0.3.4
 OCC==7.7.0
 python-occ-core==7.7.0
 numpy>=1.24.0 
+
+# windows下 OCC、python-occ-core 会报错
+# 建议使用 conda 环境
+# 安装 pythonocc-core=7.9.0 即可，使用如下命令：
+# conda install -c conda-forge pythonocc-core=7.9.0
